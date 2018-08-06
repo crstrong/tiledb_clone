@@ -186,6 +186,9 @@ std::string Status::code_to_string() const {
     case StatusCode::PreallocatedBuffer:
       type = "[TileDB::PreallocatedBuffer] Error";
       break;
+    case StatusCode::Timeout:
+      type = "[TileDB::Timeout] Error";
+      break;
     default:
       type = "[TileDB::?] Error:";
   }

@@ -107,7 +107,8 @@ enum class StatusCode : char {
   DenseCellRangeIter,
   Reader,
   Writer,
-  PreallocatedBuffer
+  PreallocatedBuffer, 
+  Timeout
 };
 
 class Status {
@@ -298,6 +299,11 @@ class Status {
   static Status PreallocatedBufferError(const std::string& msg) {
     return Status(StatusCode::PreallocatedBuffer, msg, -1);
   }
+
+  static Status TimeoutError(const std::string& msg) {
+    return Status(StatusCode::Timeout, msg, -1);
+  }
+
 
   /** Returns true iff the status indicates success **/
   bool ok() const {

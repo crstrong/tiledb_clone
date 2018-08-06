@@ -138,7 +138,7 @@ Status TileIO::read(
   } else {  // Compression
     RETURN_NOT_OK(
         storage_manager_->read(uri_, file_offset, buffer_, compressed_size));
-
+   
     // Decompress tile
     tile->reset_offset();
     tile->reset_size();
@@ -234,6 +234,27 @@ Status TileIO::write(Tile* tile, uint64_t* bytes_written) {
   return Status::Ok();
 
   STATS_FUNC_OUT(tileio_write);
+}
+
+Status TileIO::write(Tile* tile, uint64_t* bytes_written, Buffer* all_tiles) {
+  // Reset the tile and buffer offset
+  tile->reset_offset();
+  buffer_->reset_size();
+  buffer_->reset_offset();
+
+  // Compress tile
+  Compressor compressor = tile->compressor();
+  if (compressor != Compressor::NO_COMPRESSION)
+    RETURN_NOT_OK(compress_tile(tile));
+
+  // Prepare to write
+  auto buffer =
+      (compressor == Compressor::NO_COMPRESSION) ? tile->buffer() : buffer_;
+  *bytes_written = buffer->size();
+
+  all_tiles->write(buffer->data(), buffer->size());
+
+  return Status::Ok();
 }
 
 Status TileIO::write_generic(Tile* tile) {

@@ -185,6 +185,7 @@ class TileIO {
    *     invoke a filter such as compression prior to writing to the file.
    * @return Status.
    */
+  Status write(Tile* tile, uint64_t* bytes_written, Buffer* all_tiles);
   Status write(Tile* tile, uint64_t* bytes_written);
 
   /**

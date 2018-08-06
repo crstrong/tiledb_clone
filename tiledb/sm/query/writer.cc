@@ -36,6 +36,7 @@
 #include "tiledb/sm/misc/parallel_functions.h"
 #include "tiledb/sm/misc/stats.h"
 #include "tiledb/sm/misc/utils.h"
+#include "tiledb/sm/misc/stats.h"
 #include "tiledb/sm/misc/uuid.h"
 #include "tiledb/sm/query/query_macros.h"
 #include "tiledb/sm/storage_manager/storage_manager.h"
@@ -820,6 +821,8 @@ Status Writer::global_write() {
 
 template <class T>
 Status Writer::global_write() {
+  STATS_FUNC_IN(writer_global_write);
+
   // Initialize the global write state if this is the first invocation
   if (!global_write_state_)
     RETURN_CANCEL_OR_ERROR(init_global_write_state());
@@ -887,10 +890,13 @@ Status Writer::global_write() {
   frag_meta->set_tile_index_base(new_num_tiles);
 
   return Status::Ok();
+
+  STATS_FUNC_OUT(writer_global_write);
 }
 
 template <class T>
 Status Writer::global_write_handle_last_tile() {
+  STATS_FUNC_IN(writer_global_write_last);
   // See if any last tiles are nonempty.
   bool all_empty = true;
   for (const auto& attr : attributes_) {
@@ -928,6 +934,7 @@ Status Writer::global_write_handle_last_tile() {
   meta->set_tile_index_base(meta->tile_index_base() + 1);
 
   return Status::Ok();
+  STATS_FUNC_OUT(writer_global_write_last);
 }
 
 bool Writer::has_coords() const {
@@ -1903,7 +1910,6 @@ Status Writer::write_tiles(
     FragmentMetadata* frag_meta,
     std::vector<Tile>& tiles) const {
   STATS_FUNC_IN(writer_write_tiles);
-
   // Handle zero tiles
   if (tiles.empty())
     return Status::Ok();
@@ -1919,11 +1925,13 @@ Status Writer::write_tiles(
                     std::make_shared<TileIO>(
                         storage_manager_, frag_meta->attr_var_uri(attribute));
 
+  auto all_tiles = new Buffer();
   // Write tiles
   auto tile_num = tiles.size();
   uint64_t bytes_written, bytes_written_var;
   for (size_t i = 0, tile_id = 0; i < tile_num; ++i, ++tile_id) {
-    RETURN_NOT_OK(tile_io->write(&(tiles[i]), &bytes_written));
+    RETURN_NOT_OK(tile_io->write(&(tiles[i]), &bytes_written, all_tiles));
+    // RETURN_NOT_OK(tile_io->write(&(tiles[i]), &bytes_written));
     frag_meta->set_tile_offset(attribute, tile_id, bytes_written);
 
     if (var_size) {
@@ -1934,6 +1942,8 @@ Status Writer::write_tiles(
     }
   }
 
+  RETURN_NOT_OK(storage_manager_->write(frag_meta->attr_uri(attribute), all_tiles));
+
   // Close files, except in the case of global order
   if (layout_ != Layout::GLOBAL_ORDER) {
     RETURN_NOT_OK(storage_manager_->close_file(frag_meta->attr_uri(attribute)));
@@ -1942,10 +1952,9 @@ Status Writer::write_tiles(
           storage_manager_->close_file(frag_meta->attr_var_uri(attribute)));
   }
 
-  STATS_COUNTER_ADD(writer_num_attr_tiles_written, tile_num);
-
+  delete all_tiles;
   return Status::Ok();
-
+  STATS_COUNTER_ADD(writer_num_attr_tiles_written, tile_num);
   STATS_FUNC_OUT(writer_write_tiles);
 }
 
