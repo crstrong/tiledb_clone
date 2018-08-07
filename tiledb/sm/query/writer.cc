@@ -1925,13 +1925,11 @@ Status Writer::write_tiles(
                     std::make_shared<TileIO>(
                         storage_manager_, frag_meta->attr_var_uri(attribute));
 
-  auto all_tiles = new Buffer();
   // Write tiles
   auto tile_num = tiles.size();
   uint64_t bytes_written, bytes_written_var;
   for (size_t i = 0, tile_id = 0; i < tile_num; ++i, ++tile_id) {
-    RETURN_NOT_OK(tile_io->write(&(tiles[i]), &bytes_written, all_tiles));
-    // RETURN_NOT_OK(tile_io->write(&(tiles[i]), &bytes_written));
+    RETURN_NOT_OK(tile_io->write(&(tiles[i]), &bytes_written));
     frag_meta->set_tile_offset(attribute, tile_id, bytes_written);
 
     if (var_size) {
@@ -1942,7 +1940,6 @@ Status Writer::write_tiles(
     }
   }
 
-  RETURN_NOT_OK(storage_manager_->write(frag_meta->attr_uri(attribute), all_tiles));
 
   // Close files, except in the case of global order
   if (layout_ != Layout::GLOBAL_ORDER) {
@@ -1952,7 +1949,6 @@ Status Writer::write_tiles(
           storage_manager_->close_file(frag_meta->attr_var_uri(attribute)));
   }
 
-  delete all_tiles;
   return Status::Ok();
   STATS_COUNTER_ADD(writer_num_attr_tiles_written, tile_num);
   STATS_FUNC_OUT(writer_write_tiles);
