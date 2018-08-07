@@ -476,14 +476,6 @@ class S3 {
       uint64_t length,
       const Aws::String& upload_id,
       int upload_part_num);
-
-  Status make_upload_part_req_timeout(
-      const URI& uri,
-      const void* buffer,
-      uint64_t length,
-      const Aws::String& upload_id,
-      int upload_part_num);
-      // std::chrono::system_clock::time_point time_interval);
 };
 
 }  // namespace sm
