@@ -129,7 +129,6 @@ class S3 {
    * @return Status
    */
   Status flush_object(const URI& uri);
-  Status complete_multipart_upload(const URI& uri);
 
   /** Checks if a bucket is empty. */
   Status is_empty_bucket(const URI& bucket, bool* is_empty) const;
@@ -301,7 +300,6 @@ class S3 {
    * @return Status
    */
   Status write(const URI& uri, const void* buffer, uint64_t length);
-  Status put(const URI& uri, const void* buffer, uint64_t length);
 
  private:
   /* ********************************* */
@@ -476,14 +474,6 @@ class S3 {
       uint64_t length,
       const Aws::String& upload_id,
       int upload_part_num);
-
-  Status make_upload_part_req_timeout(
-      const URI& uri,
-      const void* buffer,
-      uint64_t length,
-      const Aws::String& upload_id,
-      int upload_part_num);
-      // std::chrono::system_clock::time_point time_interval);
 };
 
 }  // namespace sm

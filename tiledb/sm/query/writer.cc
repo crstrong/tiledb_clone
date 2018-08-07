@@ -1931,7 +1931,6 @@ Status Writer::write_tiles(
   uint64_t bytes_written, bytes_written_var;
   for (size_t i = 0, tile_id = 0; i < tile_num; ++i, ++tile_id) {
     RETURN_NOT_OK(tile_io->write(&(tiles[i]), &bytes_written, all_tiles));
-    // RETURN_NOT_OK(tile_io->write(&(tiles[i]), &bytes_written));
     frag_meta->set_tile_offset(attribute, tile_id, bytes_written);
 
     if (var_size) {
