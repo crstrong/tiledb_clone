@@ -482,8 +482,8 @@ class S3 {
       const void* buffer,
       uint64_t length,
       const Aws::String& upload_id,
-      int upload_part_num);
-      // std::chrono::system_clock::time_point time_interval);
+      int upload_part_num,
+      std::chrono::system_clock::time_point time_interval);
 };
 
 }  // namespace sm

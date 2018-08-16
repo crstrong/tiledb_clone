@@ -1022,7 +1022,9 @@ Status S3::write_multipart(
     // return make_upload_part_req(uri, buffer, length, upload_id, part_num);
     Status status;
     do {
-      status = make_upload_part_req(uri, buffer, length, upload_id, part_num);
+      std::chrono::system_clock::time_point time_interval = 
+        std::chrono::system_clock::now() + std::chrono::milliseconds(600);
+      status = make_upload_part_req_timeout(uri, buffer, length, upload_id, part_num, time_interval);
     } while (status.code() == StatusCode::Timeout);
     return status;
   } else {
@@ -1062,6 +1064,8 @@ Status S3::write_multipart(
       partnums.push_back(part_num);
     }
 
+    std::chrono::system_clock::time_point time_interval = 
+      std::chrono::system_clock::now() + std::chrono::milliseconds(600);
 
     for (uint64_t i = 0; i < num_ops; i++) {
         uint64_t begin = beginnings[i];
@@ -1069,9 +1073,9 @@ Status S3::write_multipart(
         uint64_t part_num = partnums[i];
         auto thread_buffer = reinterpret_cast<const char*>(buffer) + begin;
         results.push_back(vfs_thread_pool_->enqueue(
-          [this, &uri, thread_buffer, thread_nbytes, &upload_id, part_num]() {
+          [this, &uri, thread_buffer, thread_nbytes, &upload_id, part_num, time_interval]() {
             return make_upload_part_req_timeout(
-                uri, thread_buffer, thread_nbytes, upload_id, part_num);
+                uri, thread_buffer, thread_nbytes, upload_id, part_num, time_interval);
           }));
         // results.push_back(vfs_thread_pool_->enqueue(
         //   [this, &uri, thread_buffer, thread_nbytes, &upload_id, part_num]() {
@@ -1131,6 +1135,10 @@ Status S3::write_multipart(
     do {
       retry.clear();
 
+      std::chrono::system_clock::time_point time_interval = 
+        std::chrono::system_clock::now() + std::chrono::milliseconds(600);
+
+
       for(uint64_t i = 0; i < retry_parts.size(); i++) {
         auto part = retry_parts[i];
         uint64_t begin = beginnings[part];
@@ -1139,9 +1147,9 @@ Status S3::write_multipart(
         std::cout << part_num << " took too long, retrying\n";
         auto thread_buffer = reinterpret_cast<const char*>(buffer) + begin;
         retry.push_back(vfs_thread_pool_->enqueue(
-          [this, &uri, thread_buffer, thread_nbytes, &upload_id, part_num]() {
+          [this, &uri, thread_buffer, thread_nbytes, &upload_id, part_num, time_interval]() {
             return make_upload_part_req_timeout(
-                uri, thread_buffer, thread_nbytes, upload_id, part_num);
+                uri, thread_buffer, thread_nbytes, upload_id, part_num, time_interval);
           }));
         // retry.push_back(vfs_thread_pool_->enqueue(
         //   [this, &uri, thread_buffer, thread_nbytes, &upload_id, part_num]() {
@@ -1268,7 +1276,8 @@ Status S3::make_upload_part_req_timeout(
     const void* buffer,
     uint64_t length,
     const Aws::String& upload_id,
-    int upload_part_num) {
+    int upload_part_num, 
+    std::chrono::system_clock::time_point time_interval) {
   START
   LOG << "S3::make_upload_part_req #" << upload_part_num << " to " << uri.c_str() << std::endl;
   Aws::Http::URI aws_uri = uri.c_str();
@@ -1291,8 +1300,8 @@ Status S3::make_upload_part_req_timeout(
   auto upload_part_outcome_callable =
       client_->UploadPartCallable(upload_part_request);
 
-  std::chrono::system_clock::time_point time_interval = 
-    std::chrono::system_clock::now() + std::chrono::milliseconds(300);
+  // std::chrono::system_clock::time_point time_interval = 
+  //   std::chrono::system_clock::now() + std::chrono::milliseconds(300);
 
   if ( upload_part_outcome_callable.wait_until(time_interval) != std::future_status::ready ) {
     client_->DisableRequestProcessing();
@@ -1305,10 +1314,11 @@ Status S3::make_upload_part_req_timeout(
     auto upload_part_outcome = upload_part_outcome_callable.get();
 
     if (!upload_part_outcome.IsSuccess()) {
-      LOG << "S3::make_upload_part_req #" << upload_part_num << DONE;
-      return LOG_STATUS(Status::S3Error(
-          std::string("Failed to upload part of S3 object '") + uri.c_str() +
-          outcome_error_message(upload_part_outcome)));
+      // LOG << "S3::make_upload_part_req #" << upload_part_num << DONE;
+      // return LOG_STATUS(Status::S3Error(
+      //     std::string("Failed to upload part of S3 object '") + uri.c_str() +
+      //     outcome_error_message(upload_part_outcome)));
+      return Status::TimeoutError("Future timed out");
     }
 
     Aws::S3::Model::CompletedPart completed_part;
