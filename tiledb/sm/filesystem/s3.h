@@ -310,6 +310,8 @@ class S3 {
   long since() const;
   timespec tic_time_;
   bool multipart_started_ = false;
+  bool pending_futures_ = false;
+  std::vector< std::future< Aws::Utils::Outcome< Aws::S3::Model::UploadPartResult, Aws::Client::AWSError <Aws::S3::S3Errors>>>> waiting_for_;
 
   /** The S3 client. */
   std::shared_ptr<Aws::S3::S3Client> client_;
@@ -484,6 +486,9 @@ class S3 {
       const Aws::String& upload_id,
       int upload_part_num,
       std::chrono::system_clock::time_point time_interval);
+
+  // Status check_pending(const URI& uri, int part_num);
+  Status check_pending(int index);
 };
 
 }  // namespace sm
