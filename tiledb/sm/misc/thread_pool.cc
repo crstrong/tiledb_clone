@@ -147,11 +147,11 @@ std::vector<Status> ThreadPool::wait_all_status(
 }
 
 std::vector<Status> ThreadPool::wait_for_time_status(
-    // std::vector<std::future<Status>>& tasks, int wait_period) {
-  std::vector<std::future<Status>>& tasks) {
+    std::vector<std::future<Status>>& tasks, std::chrono::system_clock::time_point wait_period) {
+  // std::vector<std::future<Status>>& tasks) {
   std::vector<Status> statuses;
 
-  int count = 0;
+  // int count = 0;
   // bool waiting = false;
   // std::vector<int> waiting_for;
   // std::chrono::system_clock::time_point time_interval = 
@@ -163,7 +163,7 @@ std::vector<Status> ThreadPool::wait_for_time_status(
       statuses.push_back(Status::Error("Invalid future"));
     } else {
       Status status;
-      // if ( future.wait_until(time_interval) == std::future_status::ready) {
+      if ( future.wait_until(wait_period) == std::future_status::ready) {
         // std::cout << count + 1 << " is ready\n";
         status = future.get();
 
@@ -171,15 +171,15 @@ std::vector<Status> ThreadPool::wait_for_time_status(
          LOG_STATUS(status);
         }
         statuses.push_back(status);
-      // }
-      // else {
+      }
+      else {
       //   std::cout << count + 1 << " has timed out\n";
       //   // waiting = true;
       //   // waiting_for.push_back(count);
-      //   statuses.push_back(Status::TimeoutError("Future timed out"));
-      // }
+        statuses.push_back(Status::TimeoutError("Future timed out"));
+      }
     }
-    count++;
+    // count++;
   }
 
   // // std::vector<int> detach_these;
@@ -212,6 +212,27 @@ std::vector<Status> ThreadPool::wait_for_time_status(
   // }
 
   return statuses;
+}
+
+Status ThreadPool::get_status(std::future<Status> &task, std::chrono::system_clock::time_point wait_period) {
+    if (!task.valid()) {
+      LOG_ERROR("Waiting on invalid future.");
+      return Status::Error("Invalid future");
+    } else {
+      Status status;
+      if ( task.wait_until(wait_period) == std::future_status::ready) {
+        status = task.get();
+
+        if (!status.ok()) {
+         LOG_STATUS(status);
+        }
+
+        return status;
+      }
+      else {
+        return Status::TimeoutError("Future timed out");
+      }
+    }
 }
 
 

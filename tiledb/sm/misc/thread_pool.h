@@ -114,8 +114,10 @@ class ThreadPool {
    */
   std::vector<Status> wait_all_status(std::vector<std::future<Status>>& tasks);
 
-  // std::vector<Status> wait_for_time_status(std::vector<std::future<Status>>& tasks, int wait_period);
-  std::vector<Status> wait_for_time_status(std::vector<std::future<Status>>& tasks);
+  std::vector<Status> wait_for_time_status(std::vector<std::future<Status>>& tasks, 
+    std::chrono::system_clock::time_point wait_period);
+  // std::vector<Status> wait_for_time_status(std::vector<std::future<Status>>& tasks);
+  Status get_status(std::future<Status>& task, std::chrono::system_clock::time_point wait_period);
 
  private:
   std::mutex queue_mutex_;

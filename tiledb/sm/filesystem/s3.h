@@ -310,8 +310,7 @@ class S3 {
   long since() const;
   timespec tic_time_;
   bool multipart_started_ = false;
-  bool pending_futures_ = false;
-  std::vector< std::future< Aws::Utils::Outcome< Aws::S3::Model::UploadPartResult, Aws::Client::AWSError <Aws::S3::S3Errors>>>> waiting_for_;
+  std::unordered_map<int, Buffer*> parts_;
 
   /** The S3 client. */
   std::shared_ptr<Aws::S3::S3Client> client_;
@@ -472,23 +471,28 @@ class S3 {
    * @param upload_part_num The part number of the upload.
    * @return Status
    */
+  // Status make_upload_part_req(
+  //     const URI& uri,
+  //     const void* buffer,
+  //     uint64_t length,
+  //     const Aws::String& upload_id,
+  //     int upload_part_num);
+
   Status make_upload_part_req(
       const URI& uri,
-      const void* buffer,
       uint64_t length,
       const Aws::String& upload_id,
       int upload_part_num);
 
+
   Status make_upload_part_req_timeout(
       const URI& uri,
-      const void* buffer,
+      // const void* buffer,
       uint64_t length,
       const Aws::String& upload_id,
       int upload_part_num,
       std::chrono::system_clock::time_point time_interval);
 
-  // Status check_pending(const URI& uri, int part_num);
-  Status check_pending(int index);
 };
 
 }  // namespace sm

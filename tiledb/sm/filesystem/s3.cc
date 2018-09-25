@@ -113,18 +113,8 @@ S3::~S3() {
   for (auto& buff : file_buffers_)
     delete buff.second;
 
-  // if (pending_futures_) {
-  //   std::cout << "Destroying pending futures\n";
-  //   client_->DisableRequestProcessing();
-  //   // auto idx = waiting_for_.begin();
-  //   for (auto& p : waiting_for_) {
-  //     if (p.valid())
-  //       p.wait();
-  //     // idx = waiting_for_.erase(idx);
-  //   }
-  //   client_->EnableRequestProcessing();
-  //   pending_futures_ = false;
-  // }
+  for (auto& part : parts_)
+    delete part.second;
 }
 
 /* ********************************* */
@@ -173,8 +163,6 @@ Status S3::init(const Config::S3Params& s3_config, ThreadPool* thread_pool) {
       constants::s3_allocation_tag.c_str(),
       s3_config.connect_max_tries_,
       s3_config.connect_scale_factor_);
-
-  // config.executor = Aws::MakeShared<Aws::Utils::Threading::CustomExecutor>("test_custom");
 
   // Connect S3 client
   client_ = Aws::MakeShared<Aws::S3::S3Client>(
@@ -305,69 +293,10 @@ Status S3::flush_object(const URI& uri) {
   if (multipart_started_)
     RETURN_NOT_OK(complete_multipart_upload(uri));
 
-    // Aws::Http::URI aws_uri = uri.c_str();
-    // std::string path_c_str = aws_uri.GetPath().c_str();
-
-    // // Take a lock protecting the shared multipart data structures
-    // std::unique_lock<std::mutex> multipart_lck(multipart_upload_mtx_);
-
-    // // Do nothing - empty object
-    // auto multipart_upload_it = multipart_upload_.find(path_c_str);
-    // if (multipart_upload_it == multipart_upload_.end())
-    //   return Status::Ok();
-
-    // // Get the completed upload object
-    // auto completed_multipart_upload = multipart_upload_it->second;
-
-    // // Add all the completed parts (sorted by part number) to the upload object.
-    // auto completed_parts_it = multipart_upload_completed_parts_.find(path_c_str);
-    // if (completed_parts_it == multipart_upload_completed_parts_.end()) {
-    //   return LOG_STATUS(Status::S3Error(
-    //       "Unable to find completed parts list for S3 object " +
-    //       uri.to_string()));
-    // }
-    // for (auto& tup : completed_parts_it->second) {
-    //   Aws::S3::Model::CompletedPart& part = std::get<1>(tup);
-    //   completed_multipart_upload.AddParts(part);
-    // }
-
-    // auto multipart_upload_request_it = multipart_upload_request_.find(path_c_str);
-    // auto complete_multipart_upload_request = multipart_upload_request_it->second;
-    // complete_multipart_upload_request.WithMultipartUpload(
-    //     completed_multipart_upload);
-    // auto complete_multipart_upload_outcome =
-    //     client_->CompleteMultipartUpload(complete_multipart_upload_request);
-
-    // // Release lock while we wait for the file to flush.
-    // multipart_lck.unlock();
-
-    // wait_for_object_to_propagate(
-    //     complete_multipart_upload_request.GetBucket(),
-    //     complete_multipart_upload_request.GetKey());
-
-    // multipart_lck.lock();
-
-    // multipart_upload_IDs_.erase(path_c_str);
-    // multipart_upload_part_number_.erase(path_c_str);
-    // multipart_upload_request_.erase(multipart_upload_request_it);
-    // multipart_upload_.erase(multipart_upload_it);
-    // multipart_upload_completed_parts_.erase(path_c_str);
-
   file_buffers_.erase(uri.to_string());
   delete buff;
 
-  // //  fails when flushing directories or removed files
-  // if (!complete_multipart_upload_outcome.IsSuccess()) {
-  //   return LOG_STATUS(Status::S3Error(
-  //       std::string("Failed to flush S3 object ") + uri.c_str() +
-  //       outcome_error_message(complete_multipart_upload_outcome)));
-  // }
-
   LOG << "S3::flush_object" << DONE;
-
-  // if ( pending_futures_ ) {
-  //   check_pending();
-  // }
 
   return Status::Ok();
 }
@@ -386,12 +315,6 @@ Status S3::complete_multipart_upload(const URI& uri) {
   auto multipart_upload_it = multipart_upload_.find(path_c_str);
   if (multipart_upload_it == multipart_upload_.end())
     return Status::Ok();
-
-  // if ( pending_futures_ ) {
-  //   check_pending();
-  //   std::cout << "Enabling processing again\n";
-  //   client_->EnableRequestProcessing();
-  // }
 
   // Get the completed upload object
   auto completed_multipart_upload = multipart_upload_it->second;
@@ -663,6 +586,7 @@ Status S3::read(
   }
 
   LOG << "S3::read" << DONE;
+  LOG << "S3::read bytes " << length << "\n";
 
   return Status::Ok();
 }
@@ -1010,12 +934,6 @@ Status S3::write_multipart(
         Status::S3Error("Length not evenly divisible by part length"));
   }
 
-  // if ( pending_futures_ ) {
-  //   check_pending();
-  //   std::cout << "Enabling processing again\n";
-  //   client_->EnableRequestProcessing();
-  // }
-
  if (num_ops == 1 && !multipart_started_) {
     LOG << "S3::write_multipart" << DONE;
     return put(uri, buffer, length);
@@ -1047,16 +965,23 @@ Status S3::write_multipart(
   // Assign the part number(s), and make the write request.
   if (num_ops == 1) {
     int part_num = multipart_upload_part_number_[path_c_str]++;
+    auto buff = new Buffer();
+    buff->write(buffer, length);
+    parts_[part_num] = buff;
 
     // Unlock, as make_upload_part_req will reaquire as necessary.
     multipart_lck.unlock();
     LOG << "S3::write_multipart" << DONE;
-    // return make_upload_part_req(uri, buffer, length, upload_id, part_num);
     Status status;
     do {
       std::chrono::system_clock::time_point time_interval = 
         std::chrono::system_clock::now() + std::chrono::milliseconds(600);
-      status = make_upload_part_req_timeout(uri, buffer, length, upload_id, part_num, time_interval);
+      std::future<Status> part_fut = vfs_thread_pool_->enqueue(
+          [this, &uri, length, &upload_id, part_num]() {
+            return make_upload_part_req(
+                uri, length, upload_id, part_num);
+          });
+      status = vfs_thread_pool_->get_status(part_fut, time_interval);
     } while (status.code() == StatusCode::Timeout);
     return status;
   } else {
@@ -1083,43 +1008,37 @@ Status S3::write_multipart(
     // multipart_lck.unlock();
 
     std::vector<uint64_t> threadbytes;
-    std::vector<uint64_t> beginnings;
     std::vector<int> partnums;
     for (uint64_t i = 0; i < num_ops; i++) {
       uint64_t begin = i * bytes_per_op,
                end = std::min((i + 1) * bytes_per_op - 1, length - 1);
       uint64_t thread_nbytes = end - begin + 1;
       int part_num = static_cast<int>(part_num_base + i);
-      beginnings.push_back(begin);
       threadbytes.push_back(thread_nbytes);
       partnums.push_back(part_num);
+      auto thread_buffer = reinterpret_cast<const char*>(buffer) + begin;
+      auto buff = new Buffer();
+      buff->write(thread_buffer, thread_nbytes);
+      parts_[part_num] = buff;
     }
 
-    std::chrono::system_clock::time_point time_interval = 
-      std::chrono::system_clock::now() + std::chrono::milliseconds(600);
-
     for (uint64_t i = 0; i < num_ops; i++) {
-        uint64_t begin = beginnings[i];
         uint64_t thread_nbytes = threadbytes[i];
         uint64_t part_num = partnums[i];
-        auto thread_buffer = reinterpret_cast<const char*>(buffer) + begin;
         results.push_back(vfs_thread_pool_->enqueue(
-          [this, &uri, thread_buffer, thread_nbytes, &upload_id, part_num, time_interval]() {
-            return make_upload_part_req_timeout(
-                uri, thread_buffer, thread_nbytes, upload_id, part_num, time_interval);
+          [this, &uri, thread_nbytes, &upload_id, part_num]() {
+            return make_upload_part_req(
+                uri, thread_nbytes, upload_id, part_num);
           }));
-        // second_set.push_back(vfs_thread_pool_->enqueue(
-        //   [this, &uri, thread_buffer, thread_nbytes, &upload_id, part_num, time_interval]() {
-        //     return make_upload_part_req_timeout(
-        //         uri, thread_buffer, thread_nbytes, upload_id, part_num, time_interval);
-        //   }));
     }
     multipart_upload_part_number_[path_c_str] += num_ops;
 
     // Unlock, so the threads can take the lock as necessary.
     multipart_lck.unlock();
 
-    auto statuses = vfs_thread_pool_->wait_all_status(results);
+    std::chrono::system_clock::time_point wait_period = 
+      std::chrono::system_clock::now() + std::chrono::milliseconds(600);
+    auto statuses = vfs_thread_pool_->wait_for_time_status(results, wait_period);
 
     std::vector<Status> all_status;
     std::vector<std::future<Status>> retry;
@@ -1142,36 +1061,25 @@ Status S3::write_multipart(
       
       retry.clear();
 
-      std::chrono::system_clock::time_point time_interval = 
-        std::chrono::system_clock::now() + std::chrono::milliseconds(400);
-      
-      auto idx = retry_parts.begin();
       for(uint64_t i = 0; i < retry_parts.size(); i++) {
         auto part = retry_parts[i];
         uint64_t part_num = partnums[part];
 
-        auto check = check_pending(i);
-        if (check.code() == StatusCode::Timeout) {
-          uint64_t begin = beginnings[part];
           uint64_t thread_nbytes = threadbytes[part];
           
           std::cout << part_num << " took too long, retrying\n";
-          auto thread_buffer = reinterpret_cast<const char*>(buffer) + begin;
           retry.push_back(vfs_thread_pool_->enqueue(
-            [this, &uri, thread_buffer, thread_nbytes, &upload_id, part_num, time_interval]() {
-              return make_upload_part_req_timeout(
-                  uri, thread_buffer, thread_nbytes, upload_id, part_num, time_interval);
+            [this, &uri, thread_nbytes, &upload_id, part_num]() {
+              return make_upload_part_req(
+                  uri, thread_nbytes, upload_id, part_num);
             }));
-          ++idx;
-        }
-        else {
-          idx = retry_parts.erase(idx);
-          all_status.push_back(check);
-        }
       }  
 
-      auto retries = vfs_thread_pool_->wait_all_status(retry);
-      idx = retry_parts.begin();
+      std::chrono::system_clock::time_point wait_period = 
+        std::chrono::system_clock::now() + std::chrono::milliseconds(400);
+      auto retries = vfs_thread_pool_->wait_for_time_status(retry, wait_period);
+      
+      auto idx = retry_parts.begin();
       for(uint64_t i = 0; i < retries.size(); i++) {
         auto status = retries[i];
         if (status.code() != StatusCode::Timeout) {
@@ -1192,167 +1100,6 @@ Status S3::write_multipart(
         all_ok = false;
       }
     }
-    // std::vector<uint64_t> threadbytes;
-    // std::vector<uint64_t> beginnings;
-    // std::vector<int> partnums;
-    // for (uint64_t i = 0; i < num_ops; i++) {
-    //   uint64_t begin = i * bytes_per_op,
-    //            end = std::min((i + 1) * bytes_per_op - 1, length - 1);
-    //   uint64_t thread_nbytes = end - begin + 1;
-    //   int part_num = static_cast<int>(part_num_base + i);
-    //   beginnings.push_back(begin);
-    //   threadbytes.push_back(thread_nbytes);
-    //   partnums.push_back(part_num);
-    // }
-
-    // std::chrono::system_clock::time_point time_interval = 
-    //   std::chrono::system_clock::now() + std::chrono::milliseconds(600);
-
-    // for (uint64_t i = 0; i < num_ops; i++) {
-    //     uint64_t begin = beginnings[i];
-    //     uint64_t thread_nbytes = threadbytes[i];
-    //     uint64_t part_num = partnums[i];
-    //     auto thread_buffer = reinterpret_cast<const char*>(buffer) + begin;
-    //     results.push_back(vfs_thread_pool_->enqueue(
-    //       [this, &uri, thread_buffer, thread_nbytes, &upload_id, part_num, time_interval]() {
-    //         return make_upload_part_req_timeout(
-    //             uri, thread_buffer, thread_nbytes, upload_id, part_num, time_interval);
-    //       }));
-    //     // results.push_back(vfs_thread_pool_->enqueue(
-    //     //   [this, &uri, thread_buffer, thread_nbytes, &upload_id, part_num]() {
-    //     //     return make_upload_part_req(
-    //     //         uri, thread_buffer, thread_nbytes, upload_id, part_num);
-    //     //   }));
-    // }
-    // multipart_upload_part_number_[path_c_str] += num_ops;
-
-    // // Unlock, so the threads can take the lock as necessary.
-    // multipart_lck.unlock();
-
-    // auto statuses = vfs_thread_pool_->wait_for_time_status(results);
-
-    // // std::vector<Status> all_status;
-    // // std::vector<std::future<Status>> retry;
-    // // std::vector<int> retry_parts;
-    // // uint64_t count = 0;
-
-    // // for(uint64_t i = 0; i < partnums.size(); ++i) {
-    // //   auto status = statuses[count];
-    // //   std::cout << "Part " << partnums[i];
-    // //   if (status.code() == StatusCode::Timeout) {
-    // //     std::cout << " has timed out, trying other instance\n";
-    // //     if (statuses[count + 1].code() == StatusCode::Timeout) {
-    // //       std::cout << "Second instance of " << partnums[i] << " timed out as well\n";
-    // //       retry_parts.push_back(i);
-    // //     }
-    // //     else {
-    // //       std::cout << "Second instance of " << partnums[i] << " completed ok\n";
-    // //       all_status.push_back(statuses[count + 1]);
-    // //     }
-    // //   }
-    // //   else {
-    // //     std::cout << " completed ok\n";
-    // //     all_status.push_back(status);
-    // //   }
-    // //   count += 2;
-    // // }
-
-
-    // std::vector<Status> all_status;
-    // std::vector<std::future<Status>> retry;
-    // std::vector<int> retry_parts;
-
-    // for(uint64_t i = 0; i < statuses.size(); i++) {
-    //   auto status = statuses[i];
-    //   if (status.code() == StatusCode::Timeout) {
-    //     retry_parts.push_back(i);
-    //   }
-    //   else {
-    //     all_status.push_back(status);
-    //   }
-    // }
-
-    
-    // do {
-    //   retry.clear();
-
-    //   std::chrono::system_clock::time_point time_interval = 
-    //     std::chrono::system_clock::now() + std::chrono::milliseconds(600);
-
-
-    //   for(uint64_t i = 0; i < retry_parts.size(); i++) {
-    //     auto part = retry_parts[i];
-    //     uint64_t begin = beginnings[part];
-    //     uint64_t thread_nbytes = threadbytes[part];
-    //     uint64_t part_num = partnums[part];
-    //     std::cout << part_num << " took too long, retrying\n";
-    //     auto thread_buffer = reinterpret_cast<const char*>(buffer) + begin;
-    //     retry.push_back(vfs_thread_pool_->enqueue(
-    //       [this, &uri, thread_buffer, thread_nbytes, &upload_id, part_num, time_interval]() {
-    //         return make_upload_part_req_timeout(
-    //             uri, thread_buffer, thread_nbytes, upload_id, part_num, time_interval);
-    //       }));
-    //     // retry.push_back(vfs_thread_pool_->enqueue(
-    //     //   [this, &uri, thread_buffer, thread_nbytes, &upload_id, part_num]() {
-    //     //     return make_upload_part_req(
-    //     //         uri, thread_buffer, thread_nbytes, upload_id, part_num);
-    //     //   }));
-    //   }  
-
-    //   statuses = vfs_thread_pool_->wait_for_time_status(retry);
-
-    //   // auto idx = retry_parts.begin();
-    //   // for(uint64_t i = 0; i < statuses.size(); ++i) {
-    //   //   auto status = statuses[i];
-    //   //   // std::cout << "status of " << i << " is: " << status.to_string() << std::endl;
-    //   //   if (status.code() == StatusCode::Timeout)
-    //   //   {
-    //   //     // std::cout << "Part " << *idx << " timed out, trying next\n";
-    //   //     status = statuses[i+1];
-    //   //     if (status.code() == StatusCode::Timeout) {
-    //   //       // std::cout << "Second part " << *idx << " timed out, keep it in the list\n";
-    //   //       ++idx;
-    //   //     }
-    //   //     else {
-    //   //       // std::cout << "Second part " << *idx << " succeeded\n";
-    //   //       idx = retry_parts.erase(idx);
-    //   //       all_status.push_back(status);
-    //   //     }
-    //   //     ++i;
-    //   //   }
-    //   //   else {
-    //   //     // std::cout << "Part " << *idx << " succeeded\n";
-    //   //     idx = retry_parts.erase(idx);
-    //   //     all_status.push_back(status);
-    //   //     ++i;
-    //   //   }
-    //   // }
-    //   auto idx = retry_parts.begin();
-    //   for(uint64_t i = 0; i < statuses.size(); i++) {
-    //     auto status = statuses[i];
-    //     if (status.code() != StatusCode::Timeout) {
-    //       idx = retry_parts.erase(idx);
-    //       all_status.push_back(status);
-    //     }
-    //     else {
-    //       ++idx;
-    //     }
-    //   }
-
-    // } while (retry_parts.size() > 0);
-
-    // bool all_ok = true;
-    // for (auto status : all_status) {
-    //   if (!status.ok()){
-    //     all_ok = false;
-    //   }
-    // }
-
-
-    // if (pending_futures_) {
-    //   std::cout << "Disabling processing\n";
-    //   check_pending();
-    // }
 
     // bool all_ok = vfs_thread_pool_->wait_all(results);
     LOG << "S3::write_multipart" << DONE;
@@ -1367,7 +1114,6 @@ Status S3::write_multipart(
 
 Status S3::make_upload_part_req(
     const URI& uri,
-    const void* buffer,
     uint64_t length,
     const Aws::String& upload_id,
     int upload_part_num) {
@@ -1376,9 +1122,10 @@ Status S3::make_upload_part_req(
   Aws::Http::URI aws_uri = uri.c_str();
   auto& path = aws_uri.GetPath();
   std::string path_c_str = path.c_str();
-
+  
   auto stream = std::shared_ptr<Aws::IOStream>(
-      new boost::interprocess::bufferstream((char*)buffer, length));
+    new boost::interprocess::bufferstream(
+      (char*)parts_[upload_part_num]->data(), length));
 
   Aws::S3::Model::UploadPartRequest upload_part_request;
   upload_part_request.SetBucket(aws_uri.GetAuthority());
@@ -1390,16 +1137,14 @@ Status S3::make_upload_part_req(
       Aws::Utils::HashingUtils::CalculateMD5(*stream)));
   upload_part_request.SetContentLength(length);
 
-  auto upload_part_outcome_callable =
-      client_->UploadPartCallable(upload_part_request);
 
-  auto upload_part_outcome = upload_part_outcome_callable.get();
+  auto upload_part_outcome = client_->UploadPart(upload_part_request);
 
   if (!upload_part_outcome.IsSuccess()) {
     LOG << "S3::make_upload_part_req #" << upload_part_num << DONE;
     return LOG_STATUS(Status::S3Error(
-        std::string("Failed to upload part of S3 object '") + uri.c_str() +
-        outcome_error_message(upload_part_outcome)));
+        std::string("Failed to upload part of S3 object '") //+ uri.c_str() +
+        + outcome_error_message(upload_part_outcome)));
   }
 
   Aws::S3::Model::CompletedPart completed_part;
@@ -1408,8 +1153,10 @@ Status S3::make_upload_part_req(
 
   {
     std::unique_lock<std::mutex> lck(multipart_upload_mtx_);
-    multipart_upload_completed_parts_[path_c_str][upload_part_num] =
+    if ( multipart_upload_completed_parts_[path_c_str].count(upload_part_num) == 0) {
+      multipart_upload_completed_parts_[path_c_str][upload_part_num] =
         completed_part;
+    }
   }
 
   STATS_COUNTER_ADD(vfs_s3_num_parts_written, 1);
@@ -1418,9 +1165,10 @@ Status S3::make_upload_part_req(
   return Status::Ok();
 }
 
+
 Status S3::make_upload_part_req_timeout(
     const URI& uri,
-    const void* buffer,
+    // const void* buffer,
     uint64_t length,
     const Aws::String& upload_id,
     int upload_part_num, 
@@ -1432,7 +1180,8 @@ Status S3::make_upload_part_req_timeout(
   std::string path_c_str = path.c_str();
 
   auto stream = std::shared_ptr<Aws::IOStream>(
-      new boost::interprocess::bufferstream((char*)buffer, length));
+    new boost::interprocess::bufferstream(
+      (char*)parts_[upload_part_num]->data(), length));
 
   Aws::S3::Model::UploadPartRequest upload_part_request;
   upload_part_request.SetBucket(aws_uri.GetAuthority());
@@ -1447,27 +1196,13 @@ Status S3::make_upload_part_req_timeout(
   auto upload_part_outcome_callable =
       client_->UploadPartCallable(upload_part_request);
 
-  // std::chrono::system_clock::time_point time_interval = 
-  //   std::chrono::system_clock::now() + std::chrono::milliseconds(300);
-
   if ( upload_part_outcome_callable.wait_until(time_interval) != std::future_status::ready ) {
-    // client_->DisableRequestProcessing();
-    // auto upload_part_outcome = upload_part_outcome_callable.get();
-    // client_->EnableRequestProcessing();
-    pending_futures_ = true;
-    // if (upload_part_outcome_callable.valid())
-      waiting_for_.push_back(std::move(upload_part_outcome_callable));
     return Status::TimeoutError("Future timed out");
   }
   else {
-  // if ( upload_part_outcome_callable.wait_until(time_interval) == std::future_status::ready ) {
     auto upload_part_outcome = upload_part_outcome_callable.get();
 
     if (!upload_part_outcome.IsSuccess()) {
-      // LOG << "S3::make_upload_part_req #" << upload_part_num << DONE;
-      // return LOG_STATUS(Status::S3Error(
-      //     std::string("Failed to upload part of S3 object '") + uri.c_str() +
-      //     outcome_error_message(upload_part_outcome)));
       return Status::TimeoutError("Future timed out");
     }
 
@@ -1486,133 +1221,7 @@ Status S3::make_upload_part_req_timeout(
     LOG << "S3::make_upload_part_req #" << upload_part_num << DONE;
     return Status::Ok();
   }
-  // else {
-  //   client_->DisableRequestProcessing();
-  //   return Status::TimeoutError("Future timed out");
-  // }
 }
-
-// void S3::check_pending() {
-  
-//   client_->DisableRequestProcessing();
-  
-//   int still_pending = waiting_for_.size();
-//   auto idx = waiting_for_.begin();
-
-//   int count = 0;
-//   std::cout << "There are " << still_pending << " parts that are still processing\n";
-//   for (auto& p : waiting_for_) {
-//     std::cout << "Part " << count;
-//     ++count;
-//     if (p.valid()) {
-//       std::cout << " is still valid\n";
-//       p.wait();
-//     }
-//     else {
-//       std::cout << "\nSomething went wrong\n";
-//     }
-//     idx = waiting_for_.erase(idx);
-//     still_pending--;   
-//   }
-  
-//   if (still_pending == 0) {
-//     pending_futures_ = false;
-//     client_->EnableRequestProcessing();
-//   }
-// }
-
-Status S3::check_pending(int index) {
-  
-  // client_->DisableRequestProcessing();
-  
-  // int still_pending = waiting_for_.size();
-  // auto idx = waiting_for_.begin();
-
-  // std::cout << "There are " << still_pending << " parts that are still processing\n";
-  // for (auto& p : waiting_for_) {
-  std::cout << "Checking pending ... \n";
-    if (waiting_for_[index].valid()) {
-      if ( waiting_for_[index].wait_for(std::chrono::milliseconds(100)) == std::future_status::ready ) {
-        std::cout << "Pending part finished\n";
-        // idx = waiting_for_.erase(idx);
-        // still_pending--; 
-
-        auto part_outcome = waiting_for_[index].get();
-
-        if (!part_outcome.IsSuccess()) {
-          return LOG_STATUS(Status::S3Error(
-            std::string("Failed to upload part of S3 object '") + 
-            outcome_error_message(part_outcome)));
-        }  
-        else
-          return Status::Ok();
-      }
-      else {
-        std::cout << "Pending part not finished\n";
-        return Status::TimeoutError("Future timed out");
-      }
-      //   ++idx;
-    }
-    else {
-      std::cout << "Pending part not valid anymore\n";
-      waiting_for_.erase(waiting_for_.begin() + index);
-      return Status::TimeoutError("Future invalid");
-    }
-  //   else {
-  //     idx = waiting_for_.erase(idx);
-  //     still_pending--; 
-  //   }
-  // }
-  
-  // if (still_pending == 0) {
-  //   pending_futures_ = false;
-  //   client_->EnableRequestProcessing();
-  // }
-}
-
-// Status S3::check_pending(const URI& uri, int part_num) {
-//   START
-//   LOG << "S3::check_pending for part #" << part_num << std::endl;
-//   Aws::Http::URI aws_uri = uri.c_str();
-//   auto& path = aws_uri.GetPath();
-//   std::string path_c_str = path.c_str();
-
-//   auto idx = waiting_for_.begin();
-
-//   std::cout << "Checking pending\n";
-//   for (auto& p : waiting_for_) {
-//     if (p.first == part_num) {
-//       if ( (p.second).wait_for(std::chrono::milliseconds(200)) == std::future_status::ready ) {
-//         std::cout << "Pending part " << part_num << " finished\n";
-//         auto part_outcome = (p.second).get();
-
-//         idx = waiting_for_.erase(idx);
-        
-//         if (!part_outcome.IsSuccess()) {
-//           return LOG_STATUS(Status::S3Error(
-//               std::string("Failed to upload part of S3 object '") + uri.c_str() + 
-//               outcome_error_message(part_outcome)));
-//         }
-
-//         Aws::S3::Model::CompletedPart completed_part;
-//         completed_part.SetETag(part_outcome.GetResult().GetETag());
-//         completed_part.SetPartNumber(part_num);
-
-//         {
-//           std::unique_lock<std::mutex> lck(multipart_upload_mtx_);
-//           multipart_upload_completed_parts_[path_c_str][part_num] =
-//               completed_part;
-//         }
-        
-//         LOG << "S3::check_pending for part #" << part_num << DONE;
-//         return Status::Ok();
-//       }
-//     }
-//     ++idx;
-//   }
-//   LOG << "S3::check_pending for part #" << part_num << DONE;
-//   return Status::TimeoutError("No pending futures have finished yet");
-// }
 
 Status S3::put(const URI& uri, const void* buffer, uint64_t length) {
   if (!uri.is_s3()) {

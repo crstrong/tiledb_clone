@@ -227,7 +227,7 @@ class Writer {
   /* ********************************* */
   /*         PRIVATE ATTRIBUTES        */
   /* ********************************* */
-
+  
   /** The array schema. */
   const ArraySchema* array_schema_;
 
